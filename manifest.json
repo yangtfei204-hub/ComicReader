@@ -1,0 +1,12 @@
+{
+    "display_name": "📚 ComicReader 📚",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "未初 & 开发者助手",
+    "version": "1.0.0",
+    "homePage": "https://github.com/yangtfei204-hub/ComicReader.git",
+    "auto_update": true
+}
