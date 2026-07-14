@@ -11,6 +11,7 @@ let settingsDialogElement = null;
 let helpDialogElement = null;
 let importConfigDialogElement = null;
 let tocDialogElement = null;
+let refreshTagBar = null;
 
 const THEMES = {
     pink:           { name: '🩷 樱花粉',     emoji: '🐾' },
@@ -133,7 +134,8 @@ const DEFAULT_SETTINGS = {
     pageDirection: 'ltr', // 'ltr' 左到右 | 'rtl' 右到左（日漫）
     enabled: false,
     // 📚 漫画封面自定义设置
-    comicCovers: {}
+    comicCovers: {},
+    comicTags: {} 
 };
 
 
@@ -148,7 +150,9 @@ const state = {
     comics: [],
     activeComicId: null,
     activePageIndex: 0,
-    searchQuery: ''
+    searchQuery: '',
+    sortMode: 'time-desc',
+    filterTag: ''
 };
 
 // ==================== IndexedDB 核心 ====================
@@ -233,6 +237,251 @@ function handleError(error, userMessage = '操作失败') {
     alert(`${userMessage}: ${error.message || error}`);
 }
 
+// ==================== 美化弹窗工具 ====================
+function createProgressDialog(title, emoji = '📚') {
+    const mask = document.createElement('div');
+    mask.className = 'novel-progress-mask';
+    mask.setAttribute('data-novel-theme', state.settings.theme);
+    mask.innerHTML = `
+        <div class="novel-progress-box">
+            <div class="novel-progress-emoji">${emoji}</div>
+            <div class="novel-progress-title">${title}</div>
+            <div class="novel-progress-bar-wrap">
+                <div class="novel-progress-bar-fill"></div>
+            </div>
+            <div class="novel-progress-text">准备中...</div>
+        </div>
+    `;
+    document.body.appendChild(mask);
+    // 强制移动端居中定位
+    const isMobile = window.innerWidth <= 768 || 'ontouchstart' in window;
+    if (isMobile) {
+    const box = mask.querySelector('.novel-progress-box');
+        if (box) {
+            box.style.position = 'fixed';
+            box.style.top = Math.round(window.innerHeight / 2) + 'px';
+            box.style.left = Math.round(window.innerWidth / 2) + 'px';
+            box.style.transform = 'translate(-50%, -50%)';
+            box.style.zIndex = '200002';
+            box.style.animation = 'none';
+        }
+        mask.style.background = 'rgba(0,0,0,0.3)';
+        mask.style.pointerEvents = 'auto';
+    }
+
+    // 手动注入主题变量（进度弹窗不在 applyTheme 管理列表中）
+    const colors = state.settings.customColors || THEME_COLORS[state.settings.theme] || THEME_COLORS.pink;
+    mask.style.setProperty('--kp-bg', colors.bg);
+    mask.style.setProperty('--kp-border', colors.border);
+    mask.style.setProperty('--kp-primary', colors.primary);
+    mask.style.setProperty('--kp-primary-light', colors.primaryLight);
+    mask.style.setProperty('--kp-primary-deep', colors.primaryDeep);
+    mask.style.setProperty('--kp-text-muted', colors.textMuted);
+    mask.style.setProperty('--kp-shadow', `0 12px 35px ${colors.shadow}`);
+
+
+    return {
+        element: mask,
+        update(current, total, text) {
+            const pct = Math.round((current / total) * 100);
+            const bar = mask.querySelector('.novel-progress-bar-fill');
+            const txt = mask.querySelector('.novel-progress-text');
+            if (bar) bar.style.width = pct + '%';
+            if (txt) txt.textContent = text || `${current} / ${total}`;
+        },
+        setText(text) {
+            const txt = mask.querySelector('.novel-progress-text');
+            if (txt) txt.textContent = text;
+        },
+        close() {
+            mask.remove();
+        }
+    };
+}
+
+function showToast({ title, desc, emoji = '✅', buttonText = '好的', duration = 0 }) {
+    return new Promise((resolve) => {
+        const mask = document.createElement('div');
+        mask.className = 'novel-toast-mask';
+        mask.setAttribute('data-novel-theme', state.settings.theme);
+        mask.innerHTML = `
+            <div class="novel-toast-box">
+                <div class="novel-toast-emoji">${emoji}</div>
+                <div class="novel-toast-title">${title}</div>
+                <div class="novel-toast-desc">${desc}</div>
+                <button class="novel-toast-btn" type="button">${buttonText}</button>
+            </div>
+        `;
+        document.body.appendChild(mask);
+        // 强制移动端居中定位
+        const isMobile = window.innerWidth <= 768 || 'ontouchstart' in window;
+        if (isMobile) {
+            const box = mask.querySelector('.novel-toast-box');
+            if (box) {
+                box.style.position = 'fixed';
+                box.style.top = Math.round(window.innerHeight / 2) + 'px';
+                box.style.left = Math.round(window.innerWidth / 2) + 'px';
+                box.style.transform = 'translate(-50%, -50%)';
+                box.style.zIndex = '200003';
+                box.style.animation = 'none';
+            }
+        }
+
+            // 手动注入主题变量
+            const colors = state.settings.customColors || THEME_COLORS[state.settings.theme] || THEME_COLORS.pink;
+            mask.style.setProperty('--kp-bg', colors.bg);
+            mask.style.setProperty('--kp-border', colors.border);
+            mask.style.setProperty('--kp-primary', colors.primary);
+            mask.style.setProperty('--kp-primary-light', colors.primaryLight);
+            mask.style.setProperty('--kp-primary-deep', colors.primaryDeep);
+            mask.style.setProperty('--kp-text', colors.text);
+            mask.style.setProperty('--kp-text-muted', colors.textMuted);
+            mask.style.setProperty('--kp-action-primary', colors.actionPrimary);
+            mask.style.setProperty('--kp-action-primary-text', colors.actionPrimaryText);
+            mask.style.setProperty('--kp-action-secondary', colors.actionSecondary);
+            mask.style.setProperty('--kp-action-secondary-text', colors.actionSecondaryText);
+            mask.style.setProperty('--kp-shadow', `0 12px 35px ${colors.shadow}`);
+
+
+        const close = () => { mask.remove(); resolve(); };
+        mask.querySelector('.novel-toast-btn').onclick = close;
+
+        if (duration > 0) {
+            setTimeout(close, duration);
+        }
+    });
+}
+
+function showPrompt({ title, placeholder = '', defaultValue = '', emoji = '📝' }) {
+    return new Promise((resolve) => {
+        const mask = document.createElement('div');
+        mask.className = 'novel-toast-mask';
+        mask.setAttribute('data-novel-theme', state.settings.theme);
+        mask.innerHTML = `
+            <div class="novel-toast-box" style="min-width: 280px;">
+                <div class="novel-toast-emoji">${emoji}</div>
+                <div class="novel-toast-title">${title}</div>
+                <input type="text" class="novel-prompt-input" placeholder="${placeholder}" value="${defaultValue}" />
+                <div style="display: flex; gap: 10px; margin-top: 16px; justify-content: center;">
+                    <button class="novel-toast-btn novel-prompt-cancel" type="button" style="background: var(--kp-action-secondary); color: var(--kp-action-secondary-text);">取消</button>
+                    <button class="novel-toast-btn novel-prompt-confirm" type="button">确定</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(mask);
+        // 强制移动端居中定位
+        const isMobile2 = window.innerWidth <= 768 || 'ontouchstart' in window;
+        if (isMobile2) {
+            const box = mask.querySelector('.novel-toast-box');
+            if (box) {
+                box.style.position = 'fixed';
+                box.style.top = Math.round(window.innerHeight / 2) + 'px';
+                box.style.left = Math.round(window.innerWidth / 2) + 'px';
+                box.style.transform = 'translate(-50%, -50%)';
+                box.style.zIndex = '200003';
+                box.style.animation = 'none';
+            }
+        }
+
+        const colors = state.settings.customColors || THEME_COLORS[state.settings.theme] || THEME_COLORS.pink;
+            mask.style.setProperty('--kp-bg', colors.bg);
+            mask.style.setProperty('--kp-border', colors.border);
+            mask.style.setProperty('--kp-primary', colors.primary);
+            mask.style.setProperty('--kp-primary-light', colors.primaryLight);
+            mask.style.setProperty('--kp-primary-deep', colors.primaryDeep);
+            mask.style.setProperty('--kp-text', colors.text);
+            mask.style.setProperty('--kp-text-muted', colors.textMuted);
+            mask.style.setProperty('--kp-action-primary', colors.actionPrimary);
+            mask.style.setProperty('--kp-action-primary-text', colors.actionPrimaryText);
+            mask.style.setProperty('--kp-action-secondary', colors.actionSecondary);
+            mask.style.setProperty('--kp-action-secondary-text', colors.actionSecondaryText);
+            mask.style.setProperty('--kp-shadow', `0 12px 35px ${colors.shadow}`);
+
+        const input = mask.querySelector('.novel-prompt-input');
+        const confirmBtn = mask.querySelector('.novel-prompt-confirm');
+        const cancelBtn = mask.querySelector('.novel-prompt-cancel');
+
+        // 桌面端自动聚焦，移动端不自动弹键盘
+        const isMobile = window.innerWidth <= 768 || 'ontouchstart' in window;
+        if (!isMobile) {
+            setTimeout(() => {
+                input.focus();
+                input.select();
+            }, 100);
+        }
+
+        const close = (value) => { mask.remove(); resolve(value); };
+
+        confirmBtn.onclick = () => {
+            const val = input.value.trim();
+            close(val || null);
+        };
+
+        cancelBtn.onclick = () => close(null);
+
+        // 回车确认
+        input.onkeydown = (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                confirmBtn.click();
+            } else if (e.key === 'Escape') {
+                cancelBtn.click();
+            }
+        };
+    });
+}
+
+function showConfirm({ title, desc = '', emoji = '⚠️', confirmText = '确定', cancelText = '取消' }) {
+    return new Promise((resolve) => {
+        const mask = document.createElement('div');
+        mask.className = 'novel-toast-mask';
+        mask.setAttribute('data-novel-theme', state.settings.theme);
+        mask.innerHTML = `
+            <div class="novel-toast-box" style="min-width: 260px;">
+                <div class="novel-toast-emoji">${emoji}</div>
+                <div class="novel-toast-title">${title}</div>
+                ${desc ? `<div class="novel-toast-desc">${desc}</div>` : ''}
+                <div style="display: flex; gap: 10px; margin-top: 16px; justify-content: center;">
+                    <button class="novel-toast-btn novel-confirm-cancel" type="button" style="background: var(--kp-action-secondary); color: var(--kp-action-secondary-text);">${cancelText}</button>
+                    <button class="novel-toast-btn novel-confirm-ok" type="button" style="background: #e74c3c; color: #fff;">${confirmText}</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(mask);
+
+        const isMobile = window.innerWidth <= 768 || 'ontouchstart' in window;
+        if (isMobile) {
+            const box = mask.querySelector('.novel-toast-box');
+            if (box) {
+                box.style.position = 'fixed';
+                box.style.top = Math.round(window.innerHeight / 2) + 'px';
+                box.style.left = Math.round(window.innerWidth / 2) + 'px';
+                box.style.transform = 'translate(-50%, -50%)';
+                box.style.zIndex = '200003';
+                box.style.animation = 'none';
+            }
+        }
+
+        const colors = state.settings.customColors || THEME_COLORS[state.settings.theme] || THEME_COLORS.pink;
+        mask.style.setProperty('--kp-bg', colors.bg);
+        mask.style.setProperty('--kp-border', colors.border);
+        mask.style.setProperty('--kp-primary', colors.primary);
+        mask.style.setProperty('--kp-primary-light', colors.primaryLight);
+        mask.style.setProperty('--kp-primary-deep', colors.primaryDeep);
+        mask.style.setProperty('--kp-text', colors.text);
+        mask.style.setProperty('--kp-text-muted', colors.textMuted);
+        mask.style.setProperty('--kp-action-primary', colors.actionPrimary);
+        mask.style.setProperty('--kp-action-primary-text', colors.actionPrimaryText);
+        mask.style.setProperty('--kp-action-secondary', colors.actionSecondary);
+        mask.style.setProperty('--kp-action-secondary-text', colors.actionSecondaryText);
+        mask.style.setProperty('--kp-shadow', `0 12px 35px ${colors.shadow}`);
+
+        const close = (val) => { mask.remove(); resolve(val); };
+        mask.querySelector('.novel-confirm-ok').onclick = () => close(true);
+        mask.querySelector('.novel-confirm-cancel').onclick = () => close(false);
+    });
+}
+
 // ==================== 数据保存与恢复 ====================
 function loadExtensionSettings() {
     try {
@@ -300,33 +549,56 @@ function saveExtensionSettingsDebounced() {
 // ==================== 备份导出/导入（优化版） ====================
 async function exportBackup() {
     try {
-        const backupData = {
-            version: '1.0.0',
-            comics: state.comics,
-            pages: []
-        };
+        const progress = createProgressDialog('正在导出备份...', '💾');
+        
+        // 流式写入：先写 comics 元数据，再逐页写入
+        const chunks = [];
+        const encoder = new TextEncoder();
+        
+        // 写入头部
+        chunks.push(encoder.encode('{"version":"1.0.0","comics":'));
+        chunks.push(encoder.encode(JSON.stringify(state.comics)));
+        chunks.push(encoder.encode(',"pages":['));
+        
+        let totalPages = state.comics.reduce((sum, c) => sum + c.pagesCount, 0);
+        let processed = 0;
+        let isFirst = true;
         
         for (const comic of state.comics) {
             for (let i = 0; i < comic.pagesCount; i++) {
                 const page = await getPageFromDB(comic.id, i);
                 if (page) {
-                    backupData.pages.push({
+                    const pageObj = {
                         comicId: comic.id,
                         pageIndex: i,
                         imageData: page.imageData,
                         thumbnail: page.thumbnail
-                    });
+                    };
+                    const prefix = isFirst ? '' : ',';
+                    chunks.push(encoder.encode(prefix + JSON.stringify(pageObj)));
+                    isFirst = false;
+                }
+                processed++;
+                if (processed % 5 === 0) {
+                    progress.update(processed, totalPages);
+                    await new Promise(r => setTimeout(r, 0));
                 }
             }
         }
-
-        const blob = new Blob([JSON.stringify(backupData)], { type: 'application/json' });
+        
+        chunks.push(encoder.encode(']}'));
+        
+        // 合并为 Blob
+        const blob = new Blob(chunks, { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
         a.download = `📚ComicReader备份_${new Date().toISOString().slice(0,10)}.json`;
         a.click();
         URL.revokeObjectURL(url);
+        
+        progress.close();
+        await showToast({ emoji: '✅', title: '备份完成', desc: `共导出 ${state.comics.length} 本漫画` });
     } catch (err) {
         handleError(err, '导出备份失败');
     }
@@ -714,6 +986,32 @@ function renderShelf() {
 
     const query = state.searchQuery.trim().toLowerCase();
     const filteredComics = state.comics.filter(c => c.title.toLowerCase().includes(query));
+    // 标签过滤
+    if (state.filterTag) {
+        const tagged = filteredComics.filter(c => {
+            const tags = state.settings.comicTags?.[c.id] || [];
+            return tags.includes(state.filterTag);
+        });
+        filteredComics.length = 0;
+        filteredComics.push(...tagged);
+    }
+
+    // 排序
+    switch (state.sortMode) {
+        case 'name':
+            filteredComics.sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true }));
+            break;
+        case 'time-asc':
+            filteredComics.sort((a, b) => (a.addedTime || 0) - (b.addedTime || 0));
+            break;
+        case 'recent':
+            filteredComics.sort((a, b) => (b.lastReadTime || b.addedTime || 0) - (a.lastReadTime || a.addedTime || 0));
+            break;
+        case 'time-desc':
+        default:
+            filteredComics.sort((a, b) => (b.addedTime || 0) - (a.addedTime || 0));
+            break;
+    }
 
     if (filteredComics.length === 0) {
         container.innerHTML = `<div class="novel-empty-tip">📚 书架上还没有漫画噢，赶紧导入吧~</div>`;
@@ -821,9 +1119,16 @@ function renderShelf() {
 
         item.querySelector('.del-btn').onclick = async (e) => {
             e.stopPropagation();
-            if (confirm(`确定要彻底删除《${comic.title}》吗？这将不可恢复！`)) {
+            const confirmed = await showConfirm({
+                title: `确定删除《${comic.title}》？`,
+                desc: '所有页面数据将被永久删除，无法恢复。',
+                emoji: '🗑️',
+                confirmText: '删除',
+                cancelText: '取消'
+            });
+            if (confirmed) {
                 try {
-                    await deleteComicPagesFromDB(comic.id);
+                await deleteComicPagesFromDB(comic.id);
                     state.comics = state.comics.filter(c => c.id !== comic.id);
                     if (state.settings.comicCovers && state.settings.comicCovers[comic.id]) {
                         delete state.settings.comicCovers[comic.id];
@@ -875,7 +1180,8 @@ async function openReader(comicId) {
     document.getElementById('novel-shelf-view').style.display = 'none';
     const readerView = document.getElementById('novel-reader-view');
     readerView.style.display = 'flex';
-
+    comic.lastReadTime = Date.now();
+    saveExtensionSettingsDebounced();
     await renderActivePage();
 }
 
@@ -913,7 +1219,6 @@ async function renderActivePage() {
         }
 
         if (readingMode === 'scroll') {
-            // 滚动模式：显示当前页及相邻页面
             contentBox.innerHTML = '';
             contentBox.style.overflow = 'auto';
             contentBox.style.display = 'flex';
@@ -921,56 +1226,116 @@ async function renderActivePage() {
             contentBox.style.alignItems = 'center';
             contentBox.style.gap = '20px';
             contentBox.style.padding = '20px';
-            
-            // 预加载前后各2页
-            const startIdx = Math.max(0, state.activePageIndex - 1);
-            const endIdx = Math.min(comic.pagesCount - 1, state.activePageIndex + 2);
-            
-            for (let i = startIdx; i <= endIdx; i++) {
-                const page = await getPageFromDB(state.activeComicId, i);
-                if (page) {
-                    const imgWrapper = document.createElement('div');
-                    imgWrapper.className = 'comic-page-wrapper';
-                    imgWrapper.setAttribute('data-page-index', i);
-                    imgWrapper.style.cssText = 'width: 100%; display: flex; justify-content: center;';
-                    
-                    const img = document.createElement('img');
-                    img.src = page.imageData;
-                    img.alt = `第 ${i + 1} 页`;
-                    img.style.cssText = imgStyle;
-                    img.className = 'comic-page-image';
-                    
-                    // 🔧 修复：单击无反应，双击才放大
-                    img.onclick = (e) => {
-                        e.stopPropagation();  // 阻止冒泡到 readerContainer
-                        // 单击不做任何操作
-                    };
-                    
-                    img.ondblclick = (e) => {
-                        e.stopPropagation();  // 阻止冒泡
-                        if (fitMode === 'original') {
-                            state.settings.fitMode = 'width';
-                        } else {
-                            state.settings.fitMode = 'original';
-                        }
-                        renderActivePage();
-                    };
-                    
-                    imgWrapper.appendChild(img);
+
+            let loadedStart = Math.max(0, state.activePageIndex - 2);
+            let loadedEnd = Math.min(comic.pagesCount - 1, state.activePageIndex + 3);
+
+            async function loadPage(pageIdx, prepend = false) {
+                const imgWrapper = document.createElement('div');
+                imgWrapper.className = 'comic-page-wrapper';
+                imgWrapper.setAttribute('data-page-index', pageIdx);
+                imgWrapper.style.cssText = 'width: 100%; display: flex; justify-content: center; min-height: 300px;';
+
+                const img = document.createElement('img');
+                img.alt = `第 ${pageIdx + 1} 页`;
+                img.style.cssText = imgStyle;
+                img.className = 'comic-page-image';
+                img.onclick = (e) => e.stopPropagation();
+                img.ondblclick = (e) => {
+                    e.stopPropagation();
+                    state.settings.fitMode = fitMode === 'original' ? 'width' : 'original';
+                    renderActivePage();
+                };
+
+                // 先用缩略图占位
+                const thumbData = await getPageFromDB(state.activeComicId, pageIdx);
+                if (thumbData && thumbData.thumbnail) {
+                    img.src = thumbData.thumbnail;
+                    img.style.filter = 'blur(2px)';
+                    img.style.transition = 'filter 0.3s ease';
+                }
+
+                imgWrapper.appendChild(img);
+                if (prepend) {
+                    contentBox.insertBefore(imgWrapper, contentBox.firstChild);
+                } else {
                     contentBox.appendChild(imgWrapper);
                 }
+
+                // IntersectionObserver 懒加载原图
+                const observer = new IntersectionObserver((entries) => {
+                    entries.forEach(async (entry) => {
+                        if (entry.isIntersecting) {
+                            observer.unobserve(entry.target);
+                            const fullData = await getPageFromDB(state.activeComicId, pageIdx);
+                            if (fullData && fullData.imageData) {
+                                img.src = fullData.imageData;
+                                img.style.filter = '';
+                            }
+                        }
+                    });
+                }, { root: contentBox, rootMargin: '200px' });
+                observer.observe(imgWrapper);
             }
-            
-            // 🔧 修复：滚动到当前页顶部，而不是居中
+
+            for (let i = loadedStart; i <= loadedEnd; i++) {
+                await loadPage(i);
+            }
+
             setTimeout(() => {
-                const currentPageEl = contentBox.querySelector(`[data-page-index="${state.activePageIndex}"]`);
-                if (currentPageEl) {
-                    // 使用 scrollTop 精确控制，保持在顶部
-                    contentBox.scrollTop = currentPageEl.offsetTop - 20;  // 减去 20px 作为顶部边距
-                }
+                const el = contentBox.querySelector(`[data-page-index="${state.activePageIndex}"]`);
+                if (el) contentBox.scrollTop = el.offsetTop - 20;
             }, 100);
-            
+
+            let isLoadingMore = false;
+            contentBox.onscroll = async () => {
+                if (isLoadingMore) return;
+
+                if (contentBox.scrollTop + contentBox.clientHeight >= contentBox.scrollHeight - 200) {
+                    if (loadedEnd < comic.pagesCount - 1) {
+                        isLoadingMore = true;
+                        const newEnd = Math.min(loadedEnd + 3, comic.pagesCount - 1);
+                        for (let i = loadedEnd + 1; i <= newEnd; i++) {
+                            await loadPage(i);
+                        }
+                        loadedEnd = newEnd;
+                        isLoadingMore = false;
+                    }
+                }
+
+                if (contentBox.scrollTop <= 200) {
+                    if (loadedStart > 0) {
+                        isLoadingMore = true;
+                        const oldScrollHeight = contentBox.scrollHeight;
+                        const newStart = Math.max(0, loadedStart - 3);
+                        for (let i = loadedStart - 1; i >= newStart; i--) {
+                            await loadPage(i, true);
+                        }
+                        loadedStart = newStart;
+                        contentBox.scrollTop += contentBox.scrollHeight - oldScrollHeight;
+                        isLoadingMore = false;
+                    }
+                }
+
+                const wrappers = contentBox.querySelectorAll('.comic-page-wrapper');
+                const containerRect = contentBox.getBoundingClientRect();
+                for (const w of wrappers) {
+                    const rect = w.getBoundingClientRect();
+                    if (rect.top < containerRect.top + containerRect.height / 2 && rect.bottom > containerRect.top) {
+                        const idx = parseInt(w.getAttribute('data-page-index'));
+                        if (idx !== state.activePageIndex) {
+                            state.activePageIndex = idx;
+                            comic.currentPage = idx;
+                            headerTitle.textContent = `${comic.title} - 第 ${idx + 1}/${comic.pagesCount} 页`;
+                            saveExtensionSettingsDebounced();
+                        }
+                        break;
+                    }
+                }
+            };
+
         } else {
+
             // 翻页模式：只显示当前页
             contentBox.style.overflow = 'hidden';
             contentBox.style.display = 'flex';
@@ -1010,6 +1375,14 @@ async function renderActivePage() {
         comic.currentPage = state.activePageIndex;
         saveExtensionSettingsDebounced();
         applyReaderStyles();
+        // 更新页码滑块
+        const slider = document.getElementById('novel-page-slider');
+        const sliderLbl = document.getElementById('novel-slider-label');
+        if (slider && sliderLbl) {
+            slider.max = comic.pagesCount - 1;
+            slider.value = state.activePageIndex;
+            sliderLbl.textContent = `${state.activePageIndex + 1}/${comic.pagesCount}`;
+        }
     } catch (err) {
         handleError(err, '页面加载失败');
     }
@@ -1030,16 +1403,22 @@ function quitReader() {
     renderShelf();
 }
 
-function renameComic(comicId) {
+async function renameComic(comicId) {
     const comic = state.comics.find(c => c.id === comicId);
     if (!comic) return;
-    const newName = prompt("请输入新名称:", comic.title);
+    const newName = await showPrompt({
+        title: '请输入新名称',
+        placeholder: '漫画名称...',
+        defaultValue: comic.title,
+        emoji: '✏️'
+    });
     if (newName && newName.trim()) {
         comic.title = newName.trim();
         saveExtensionSettings();
         renderShelf();
     }
 }
+
 
 // ==================== 翻页控制 ====================
 async function nextPage() {
@@ -1121,6 +1500,8 @@ function openCoverEditMenu(comicId, event) {
         <div class="novel-menu-item-ctx" data-action="gradient">🎨 使用默认渐变</div>
         <div class="novel-menu-item-ctx" data-action="text">✏️ 自定义文字</div>
         <div class="novel-menu-item-ctx" data-action="image">🖼️ 上传封面图片</div>
+        <div class="novel-menu-item-ctx" data-action="page">📄 选择页面做封面</div>
+        <div class="novel-menu-item-ctx" data-action="tags">🏷️ 管理标签</div>
     `;
 
     document.body.appendChild(menu);
@@ -1176,6 +1557,44 @@ function openCoverEditMenu(comicId, event) {
                     });
                 };
                 input.click();
+            } else if (action === 'page') {
+                const pageNum = await showPrompt({
+                    title: '输入页码作为封面',
+                    placeholder: `1 - ${comic.pagesCount}`,
+                    defaultValue: '1',
+                    emoji: '📄'
+                });
+                if (pageNum) {
+                    const idx = parseInt(pageNum) - 1;
+                    if (idx >= 0 && idx < comic.pagesCount) {
+                        try {
+                            const pageData = await getPageFromDB(comic.id, idx);
+                            if (pageData && pageData.thumbnail) {
+                                state.settings.comicCovers[comicId] = { type: 'image', value: pageData.thumbnail };
+                                saveExtensionSettings();
+                                renderShelf();
+                            }
+                        } catch (e) {
+                            handleError(e, '获取页面失败');
+                        }
+                    }
+                }
+            } else if (action === 'tags') {
+                const currentTags = (state.settings.comicTags?.[comicId] || []).join(', ');
+                const input = await showPrompt({
+                    title: '管理标签（逗号分隔）',
+                    placeholder: '日漫, 已读完, 收藏',
+                    defaultValue: currentTags,
+                    emoji: '🏷️'
+                });
+                if (input !== null) {
+                    const tags = input.split(/[,，]/).map(t => t.trim()).filter(Boolean);
+                    if (!state.settings.comicTags) state.settings.comicTags = {};
+                    state.settings.comicTags[comicId] = tags;
+                    saveExtensionSettings();
+                    if (typeof refreshTagBar === 'function') refreshTagBar();
+                    renderShelf();
+                }
             }
         };
     });
@@ -1225,6 +1644,12 @@ function createPanel() {
                 <div class="novel-shelf-header">
                     <div class="novel-search-row">
                         <input type="text" id="novel-search-input" placeholder="输入漫画名搜索 (高亮匹配)..." />
+                        <select id="novel-sort-select" class="novel-settings-select" style="width: auto; min-width: 80px; font-size: 11px; padding: 4px 6px;">
+                            <option value="time-desc">最新导入</option>
+                            <option value="time-asc">最早导入</option>
+                            <option value="name">按名称</option>
+                            <option value="recent">最近阅读</option>
+                        </select>
                         <button id="novel-toggle-layout" class="novel-action-btn-flat" title="切换列表/网格排列" type="button">⚃</button>
                     </div>
                     <div class="novel-import-row">
@@ -1233,6 +1658,9 @@ function createPanel() {
                         <button id="novel-backup-btn" class="novel-mint-action-btn" type="button">备份</button>
                         <input type="file" id="novel-backup-picker" accept=".json" style="display:none;" />
                         <button id="novel-restore-btn" class="novel-mint-action-btn" type="button">还原</button>
+                    </div>
+                    <div class="novel-tag-row" style="display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap;">
+                        <button class="novel-tag-btn active" data-tag="" type="button" style="font-size: 10px; padding: 2px 8px; border-radius: 10px; border: 1.5px solid var(--kp-border); background: var(--kp-primary); color: var(--kp-action-primary-text); cursor: pointer;">全部</button>
                     </div>
                 </div>
                 <div class="novel-shelf-body" id="novel-shelf-container"></div>
@@ -1255,6 +1683,10 @@ function createPanel() {
                         <button id="novel-menu-prev" class="novel-menu-item">◀ 上一页</button>
                         <button id="novel-menu-toc" class="novel-menu-item">📖 目录</button>
                         <button id="novel-menu-next" class="novel-menu-item">下一页 ▶</button>
+                    </div>
+                    <div class="novel-reader-slider-menu">
+                        <span id="novel-slider-label" style="font-size: 10px; color: var(--kp-text-muted); white-space: nowrap;">1/1</span>
+                        <input type="range" id="novel-page-slider" min="0" max="0" value="0" style="flex: 1;">
                     </div>
                 </div>
             </div>
@@ -1289,6 +1721,11 @@ function setupPanelEventDelegation() {
     document.getElementById('novel-toggle-layout').onclick = () => {
         state.settings.layoutMode = state.settings.layoutMode === 'list' ? 'grid' : 'list';
         saveExtensionSettings();
+        renderShelf();
+    };
+    
+    document.getElementById('novel-sort-select').onchange = (e) => {
+        state.sortMode = e.target.value;
         renderShelf();
     };
 
@@ -1349,6 +1786,20 @@ function setupPanelEventDelegation() {
         menuOverlay.classList.remove('active');
         openTocDialog();
     };
+    const pageSlider = document.getElementById('novel-page-slider');
+    const sliderLabel = document.getElementById('novel-slider-label');
+
+    pageSlider.oninput = () => {
+        const val = parseInt(pageSlider.value);
+        const comic = state.comics.find(c => c.id === state.activeComicId);
+        if (comic) sliderLabel.textContent = `${val + 1}/${comic.pagesCount}`;
+    };
+
+    pageSlider.onchange = async () => {
+        state.activePageIndex = parseInt(pageSlider.value);
+        await renderActivePage();
+        menuOverlay.classList.remove('active');
+    };
 
     // 🔧 键盘快捷键
     document.addEventListener('keydown', (e) => {
@@ -1400,6 +1851,28 @@ function setupPanelEventDelegation() {
     });
 
     initDragSystem(panelElement, document.getElementById('novel-ext-header-drag'), false);
+
+    refreshTagBar = function() {
+        const tagRow = panelElement.querySelector('.novel-tag-row');
+        if (!tagRow) return;
+        const allTags = new Set();
+        Object.values(state.settings.comicTags || {}).forEach(tags => tags.forEach(t => allTags.add(t)));
+        
+        let html = `<button class="novel-tag-btn ${state.filterTag === '' ? 'active' : ''}" data-tag="" type="button" style="font-size: 10px; padding: 2px 8px; border-radius: 10px; border: 1.5px solid var(--kp-border); background: ${state.filterTag === '' ? 'var(--kp-primary)' : 'var(--kp-bg)'}; color: ${state.filterTag === '' ? 'var(--kp-action-primary-text)' : 'var(--kp-text)'}; cursor: pointer;">全部</button>`;
+        allTags.forEach(tag => {
+            html += `<button class="novel-tag-btn ${state.filterTag === tag ? 'active' : ''}" data-tag="${tag}" type="button" style="font-size: 10px; padding: 2px 8px; border-radius: 10px; border: 1.5px solid var(--kp-border); background: ${state.filterTag === tag ? 'var(--kp-primary)' : 'var(--kp-bg)'}; color: ${state.filterTag === tag ? 'var(--kp-action-primary-text)' : 'var(--kp-text)'}; cursor: pointer;">${tag}</button>`;
+        });
+        tagRow.innerHTML = html;
+        tagRow.querySelectorAll('.novel-tag-btn').forEach(btn => {
+            btn.onclick = () => {
+                state.filterTag = btn.dataset.tag;
+                refreshTagBar();
+                renderShelf();
+            };
+        });
+    }
+    refreshTagBar();
+
 }
 
 // ==================== PDF 文件处理（优化版） ====================
@@ -1419,36 +1892,25 @@ async function handlePdfImport(pdfFile) {
             pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
         }
 
-        const comicName = prompt('请输入漫画名称:', pdfFile.name.replace(/\.pdf$/i, ''));
-        if (!comicName || !comicName.trim()) return;
+        const comicName = await showPrompt({
+            title: '请输入漫画名称',
+            placeholder: '输入名称...',
+            defaultValue: pdfFile.name.replace(/\.pdf$/i, ''),
+            emoji: '📄'
+        });
+        if (!comicName) return;
+
 
         // 显示进度提示
-        const progressDiv = document.createElement('div');
-        progressDiv.style.cssText = `
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: var(--kp-bg);
-            border: 3px solid var(--kp-border);
-            border-radius: 15px;
-            padding: 20px 30px;
-            z-index: 200001;
-            text-align: center;
-            box-shadow: var(--kp-shadow);
-        `;
-        progressDiv.innerHTML = `
-            <div style="font-size: 14px; font-weight: bold; color: var(--kp-primary-deep); margin-bottom: 10px;">正在解析 PDF 文件...</div>
-            <div id="import-progress-text" style="font-size: 12px; color: var(--kp-text);">请稍候...</div>
-        `;
-        document.body.appendChild(progressDiv);
+        const progress = createProgressDialog(`正在解析《${comicName}》...`, '📄');
+
 
         // 读取 PDF 文件
         const arrayBuffer = await pdfFile.arrayBuffer();
         const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
         const totalPages = pdf.numPages;
 
-        document.getElementById('import-progress-text').textContent = `共 ${totalPages} 页，开始渲染...`;
+        progress.setText(`共 ${totalPages} 页，开始渲染...`);
 
         const comicId = 'comic_' + Date.now();
 
@@ -1468,7 +1930,7 @@ async function handlePdfImport(pdfFile) {
             
             await Promise.all(batchPromises);
             
-            document.getElementById('import-progress-text').textContent = `渲染中：${batchEnd} / ${totalPages}`;
+            progress.update(batchEnd, totalPages);
             
             // 让出主线程，避免界面卡死
             await new Promise(resolve => setTimeout(resolve, 0));
@@ -1538,15 +2000,26 @@ async function handlePdfImport(pdfFile) {
             currentPage: 0,
             addedTime: Date.now()
         });
+        // 自动用第一页缩略图做封面
+        try {
+            const firstPage = await getPageFromDB(comicId, 0);
+            if (firstPage && firstPage.thumbnail) {
+                state.settings.comicCovers[comicId] = { type: 'image', value: firstPage.thumbnail };
+            }
+        } catch (e) { /* 忽略 */ }
 
         saveExtensionSettings();
         renderShelf();
 
-        progressDiv.remove();
-        alert(`《${comicName}》成功导入！共 ${totalPages} 页。`);
+        progress.close();
+        await showToast({
+            emoji: '🎉',
+            title: '导入成功！',
+            desc: `《${comicName}》已入库<br>共 ${totalPages} 页，开始阅读吧~`
+        });
+
     } catch (err) {
-        const progressDiv = document.querySelector('[style*="z-index: 200001"]');
-        if (progressDiv) progressDiv.remove();
+        if (typeof progress !== 'undefined') progress.close();
         handleError(err, 'PDF 导入失败');
     }
     
@@ -1569,29 +2042,17 @@ async function handleZipImport(zipFile) {
             });
         }
 
-        const comicName = prompt('请输入漫画名称:', zipFile.name.replace('.zip', ''));
-        if (!comicName || !comicName.trim()) return;
+        const comicName = await showPrompt({
+            title: '请输入漫画名称',
+            placeholder: '输入名称...',
+            defaultValue: zipFile.name.replace(/\.zip$/i, ''),
+            emoji: '📦'
+        });
+        if (!comicName) return;
+
 
         // 显示进度提示
-        const progressDiv = document.createElement('div');
-        progressDiv.style.cssText = `
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: var(--kp-bg);
-            border: 3px solid var(--kp-border);
-            border-radius: 15px;
-            padding: 20px 30px;
-            z-index: 200001;
-            text-align: center;
-            box-shadow: var(--kp-shadow);
-        `;
-        progressDiv.innerHTML = `
-            <div style="font-size: 14px; font-weight: bold; color: var(--kp-primary-deep); margin-bottom: 10px;">正在解压 ZIP 文件...</div>
-            <div id="import-progress-text" style="font-size: 12px; color: var(--kp-text);">请稍候...</div>
-        `;
-        document.body.appendChild(progressDiv);
+        const progress = createProgressDialog(`正在解压《${comicName}》...`, '📦');
 
         // 解压 ZIP
         const zip = await JSZip.loadAsync(zipFile);
@@ -1610,15 +2071,15 @@ async function handleZipImport(zipFile) {
         }
 
         if (imageFiles.length === 0) {
-            progressDiv.remove();
-            alert('ZIP 文件中没有找到图片！');
+            progress.close();
+            await showToast({ emoji: '😅', title: '没有找到图片', desc: 'ZIP 文件中没有可识别的图片文件' });
             return;
         }
 
         // 按文件名自然排序
         imageFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
 
-        document.getElementById('import-progress-text').textContent = `找到 ${imageFiles.length} 张图片，开始导入...`;
+        progress.setText(`找到 ${imageFiles.length} 张图片，开始导入...`);
 
         const comicId = 'comic_' + Date.now();
 
@@ -1628,7 +2089,7 @@ async function handleZipImport(zipFile) {
             const thumbnail = await generateThumbnail(base64, 150);
             await savePageToDB(comicId, i, base64, thumbnail);
     
-            document.getElementById('import-progress-text').textContent = `${i + 1} / ${imageFiles.length}`;
+            progress.update(i + 1, imageFiles.length);
     
             // 每处理 10 张让出主线程
             if (i % 10 === 9) {
@@ -1652,14 +2113,29 @@ async function handleZipImport(zipFile) {
             addedTime: Date.now()
         });
 
+        // 自动用第一页缩略图做封面
+        try {
+            const firstPage = await getPageFromDB(comicId, 0);
+            if (firstPage && firstPage.thumbnail) {
+                state.settings.comicCovers[comicId] = { type: 'image', value: firstPage.thumbnail };
+            }
+        } catch (e) { /* 忽略 */ }
+
         saveExtensionSettings();
         renderShelf();
         
-        progressDiv.remove();
-        alert(`《${comicName}》成功导入！共 ${imageFiles.length} 页。`);
+        progress.close();
+        await showToast({
+            emoji: '🎉',
+            title: '导入成功！',
+            desc: `《${comicName}》已入库<br>共 ${imageFiles.length} 页，开始阅读吧~`
+        });
+
     } catch (err) {
+        if (typeof progress !== 'undefined') progress.close();
         handleError(err, 'ZIP 导入失败');
     }
+
 }
 
 // ==================== 导入配置对话框 ====================
@@ -1745,25 +2221,7 @@ function openImportConfigDialog(files) {
             const totalPages = sortedFiles.length;
 
             // 显示进度提示
-            const progressDiv = document.createElement('div');
-            progressDiv.style.cssText = `
-                position: fixed;
-                top: 50%;
-                left: 50%;
-                transform: translate(-50%, -50%);
-                background: var(--kp-bg);
-                border: 3px solid var(--kp-border);
-                border-radius: 15px;
-                padding: 20px 30px;
-                z-index: 200001;
-                text-align: center;
-                box-shadow: var(--kp-shadow);
-            `;
-            progressDiv.innerHTML = `
-                <div style="font-size: 14px; font-weight: bold; color: var(--kp-primary-deep); margin-bottom: 10px;">正在导入漫画...</div>
-                <div id="import-progress-text" style="font-size: 12px; color: var(--kp-text);">0 / ${totalPages}</div>
-            `;
-            document.body.appendChild(progressDiv);
+            const progress = createProgressDialog(`正在导入《${comicName}》...`, '🖼️');
 
             // 批量处理图片（WebP 压缩 + 尺寸限制）
             for (let i = 0; i < sortedFiles.length; i++) {
@@ -1773,7 +2231,7 @@ function openImportConfigDialog(files) {
                 await savePageToDB(comicId, i, base64, thumbnail);
     
                 // 更新进度
-                document.getElementById('import-progress-text').textContent = `${i + 1} / ${totalPages}`;
+                progress.update(i + 1, totalPages);
     
                 // 每处理 10 张让出主线程，避免界面卡死
                 if (i % 10 === 9) {
@@ -1801,15 +2259,30 @@ function openImportConfigDialog(files) {
                 currentPage: 0,
                 addedTime: Date.now()
             });
+            // 自动用第一页缩略图做封面
+            try {
+                const firstPage = await getPageFromDB(comicId, 0);
+                if (firstPage && firstPage.thumbnail) {
+                    state.settings.comicCovers[comicId] = { type: 'image', value: firstPage.thumbnail };
+                }
+            } catch (e) { /* 忽略 */ }
+
 
             saveExtensionSettings();
             renderShelf();
             
-            progressDiv.remove();
-            alert(`《${comicName}》成功导入！共 ${totalPages} 页。`);
+            progress.close();
+            await showToast({
+                emoji: '🎉',
+                title: '导入成功！',
+                desc: `《${comicName}》已入库<br>共 ${totalPages} 页，开始阅读吧~`
+            });
+
         } catch (err) {
+            if (typeof progress !== 'undefined') progress.close();
             handleError(err, '导入失败');
         }
+
     };
 }
 
@@ -1898,6 +2371,8 @@ async function openTocDialog() {
                         `;
                         domItem.onclick = async () => {
                             state.activePageIndex = index;
+                            comic.lastReadTime = Date.now();
+                            saveExtensionSettingsDebounced();
                             await renderActivePage();
                             tocDialogElement.remove();
                         };
