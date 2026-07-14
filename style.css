@@ -1377,3 +1377,143 @@ input[type="range"]::-moz-range-thumb:hover {
     transform: translateX(3px);
 }
 
+/* ========== 扩展菜单栏 - 毛玻璃美化 ========== */
+#novel-ext-menu-container {
+    margin-bottom: 10px;
+    padding: 0;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1.5px solid rgba(255, 255, 255, 0.3);
+    background: rgba(255, 255, 255, 0.15);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    box-shadow: 
+        0 4px 16px rgba(0, 0, 0, 0.1),
+        inset 0 1px 0 rgba(255, 255, 255, 0.3);
+    transition: all 0.3s ease;
+}
+
+#novel-ext-menu-container:hover {
+    background: rgba(255, 255, 255, 0.22);
+    border-color: rgba(255, 255, 255, 0.45);
+    box-shadow: 
+        0 6px 20px rgba(0, 0, 0, 0.12),
+        inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+.novel-ext-menu-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.novel-ext-menu-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #e8e8e8;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    letter-spacing: 0.5px;
+}
+
+.novel-ext-menu-body {
+    padding: 10px 14px;
+}
+
+/* 启动按钮 */
+.novel-ext-launch-btn {
+    width: 100%;
+    padding: 10px 16px;
+    border: none;
+    border-radius: 8px;
+    background: linear-gradient(135deg, rgba(251, 114, 153, 0.8), rgba(134, 227, 206, 0.6));
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.25s ease;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+    box-shadow: 0 2px 8px rgba(251, 114, 153, 0.3);
+}
+
+.novel-ext-launch-btn:hover {
+    background: linear-gradient(135deg, rgba(251, 114, 153, 1), rgba(134, 227, 206, 0.85));
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(251, 114, 153, 0.45);
+}
+
+.novel-ext-launch-btn:active {
+    transform: translateY(0);
+    box-shadow: 0 1px 4px rgba(251, 114, 153, 0.3);
+}
+
+/* 开关样式 */
+.novel-ext-toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 40px;
+    height: 22px;
+    cursor: pointer;
+}
+
+.novel-ext-toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.novel-ext-toggle-slider {
+    position: absolute;
+    inset: 0;
+    background: rgba(120, 120, 120, 0.4);
+    border-radius: 22px;
+    transition: all 0.3s ease;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.novel-ext-toggle-slider::before {
+    content: '';
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    left: 3px;
+    bottom: 2px;
+    background: #ffffff;
+    border-radius: 50%;
+    transition: all 0.3s ease;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+}
+
+.novel-ext-toggle-switch input:checked + .novel-ext-toggle-slider {
+    background: linear-gradient(135deg, #fb7299, #86e3ce);
+    border-color: rgba(251, 114, 153, 0.5);
+}
+
+.novel-ext-toggle-switch input:checked + .novel-ext-toggle-slider::before {
+    transform: translateX(18px);
+}
+
+/* 深色/浅色主题自适应 */
+@media (prefers-color-scheme: light) {
+    #novel-ext-menu-container {
+        background: rgba(0, 0, 0, 0.05);
+        border-color: rgba(0, 0, 0, 0.1);
+        box-shadow: 
+            0 4px 16px rgba(0, 0, 0, 0.06),
+            inset 0 1px 0 rgba(255, 255, 255, 0.8);
+    }
+    
+    #novel-ext-menu-container:hover {
+        background: rgba(0, 0, 0, 0.08);
+    }
+    
+    .novel-ext-menu-title {
+        color: #4a4a4a;
+        text-shadow: none;
+    }
+    
+    .novel-ext-menu-header {
+        border-bottom-color: rgba(0, 0, 0, 0.08);
+    }
+}

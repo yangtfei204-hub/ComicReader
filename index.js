@@ -131,6 +131,7 @@ const DEFAULT_SETTINGS = {
     readingMode: 'scroll', // 'scroll' 滚动模式 | 'flip' 翻页模式
     fitMode: 'width', // 'width' 适应宽度 | 'height' 适应高度 | 'original' 原始大小
     pageDirection: 'ltr', // 'ltr' 左到右 | 'rtl' 右到左（日漫）
+    enabled: false,
     // 📚 漫画封面自定义设置
     comicCovers: {}
 };
@@ -386,7 +387,7 @@ function imageToBase64(file) {
     });
 }
 
-function generateThumbnail(base64Data, maxSize = 200) {
+function generateThumbnail(base64Data, maxSize = 150) {
     return new Promise((resolve) => {
         const img = new Image();
         img.onload = () => {
@@ -410,12 +411,79 @@ function generateThumbnail(base64Data, maxSize = 200) {
             canvas.height = height;
             const ctx = canvas.getContext('2d');
             ctx.drawImage(img, 0, 0, width, height);
-            resolve(canvas.toDataURL('image/jpeg', 0.7));
+            
+            // 优先 WebP，更小体积
+            let result = canvas.toDataURL('image/webp', 0.45);
+            if (result === 'data:,' || result.length < 50) {
+                result = canvas.toDataURL('image/jpeg', 0.5);
+            }
+            
+            // 释放内存
+            canvas.width = 0;
+            canvas.height = 0;
+            resolve(result);
         };
         img.onerror = () => resolve(base64Data);
         img.src = base64Data;
     });
 }
+
+
+function processImageForStorage(file, maxWidth = 1600, maxHeight = 2400) {
+    return new Promise((resolve, reject) => {
+        if (!file.type.startsWith('image/')) {
+            reject(new Error('不是有效的图片文件'));
+            return;
+        }
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const img = new Image();
+            img.onload = () => {
+                let w = img.width, h = img.height;
+                
+                // 尺寸在限制内 + 原文件较小 + 已经是高效格式 → 直接用原数据，不重新编码
+                const fileSizeKB = file.size / 1024;
+                if (w <= maxWidth && h <= maxHeight && fileSizeKB < 300 &&
+                    (file.type === 'image/webp' || file.type === 'image/jpeg')) {
+                    resolve(e.target.result);
+                    return;
+                }
+                
+                // 超尺寸时等比缩放
+                if (w > maxWidth || h > maxHeight) {
+                    const ratio = Math.min(maxWidth / w, maxHeight / h);
+                    w = Math.floor(w * ratio);
+                    h = Math.floor(h * ratio);
+                }
+                
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                ctx.imageSmoothingEnabled = true;
+                ctx.imageSmoothingQuality = 'high';
+                ctx.drawImage(img, 0, 0, w, h);
+                
+                // 优先用 WebP（体积比 JPEG 小 25-35%，画质无差异）
+                let result = canvas.toDataURL('image/webp', 0.80);
+                // 极少数浏览器不支持 webp 编码时回退
+                if (result === 'data:,' || result.length < 50) {
+                    result = canvas.toDataURL('image/jpeg', 0.82);
+                }
+                
+                // 释放 canvas 内存
+                canvas.width = 0;
+                canvas.height = 0;
+                resolve(result);
+            };
+            img.onerror = () => reject(new Error('图片加载失败'));
+            img.src = e.target.result;
+        };
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+    });
+}
+
 
 function naturalSort(a, b) {
     return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
@@ -1388,7 +1456,7 @@ async function handlePdfImport(pdfFile) {
         const MAX_WIDTH = 1200;
         
         // 🔧 优化：分批并发处理（每批 3 页）
-        const BATCH_SIZE = 3;
+        const BATCH_SIZE = 5;
         
         for (let batchStart = 0; batchStart < totalPages; batchStart += BATCH_SIZE) {
             const batchEnd = Math.min(batchStart + BATCH_SIZE, totalPages);
@@ -1423,11 +1491,15 @@ async function handlePdfImport(pdfFile) {
 
             await page.render({ canvasContext: pageCtx, viewport }).promise;
 
-            // 🔧 优化：降低 JPEG 质量到 0.75，体积减少约 30%，视觉差异极小
-            const base64 = pageCanvas.toDataURL('image/jpeg', 0.75);
+            // WebP 0.78 ≈ JPEG 0.85 视觉效果，体积小 25-35%
+            let base64 = pageCanvas.toDataURL('image/webp', 0.78);
+            if (base64 === 'data:,' || base64.length < 50) {
+                base64 = pageCanvas.toDataURL('image/jpeg', 0.80);
+            }
+
             
             // 🔧 优化：直接用 canvas 缩放生成缩略图，不走 Image 加载
-            const thumbSize = 200;
+            const thumbSize = 150;
             const thumbRatio = Math.min(thumbSize / viewport.width, thumbSize / viewport.height);
             const tw = Math.floor(viewport.width * thumbRatio);
             const th = Math.floor(viewport.height * thumbRatio);
@@ -1437,7 +1509,11 @@ async function handlePdfImport(pdfFile) {
             tCanvas.height = th;
             const tCtx = tCanvas.getContext('2d');
             tCtx.drawImage(pageCanvas, 0, 0, tw, th);
-            const thumbnail = tCanvas.toDataURL('image/jpeg', 0.6);
+            let thumbnail = tCanvas.toDataURL('image/webp', 0.45);
+            if (thumbnail === 'data:,' || thumbnail.length < 50) {
+                thumbnail = tCanvas.toDataURL('image/jpeg', 0.55);
+            }
+
 
             await savePageToDB(comicId, pageIndex, base64, thumbnail);
             
@@ -1546,14 +1622,20 @@ async function handleZipImport(zipFile) {
 
         const comicId = 'comic_' + Date.now();
 
-        // 批量处理图片
+        // 批量处理图片（WebP 压缩 + 尺寸限制）
         for (let i = 0; i < imageFiles.length; i++) {
-            const base64 = await imageToBase64(imageFiles[i].file);
-            const thumbnail = await generateThumbnail(base64, 200);
+            const base64 = await processImageForStorage(imageFiles[i].file);
+            const thumbnail = await generateThumbnail(base64, 150);
             await savePageToDB(comicId, i, base64, thumbnail);
-            
+    
             document.getElementById('import-progress-text').textContent = `${i + 1} / ${imageFiles.length}`;
+    
+            // 每处理 10 张让出主线程
+            if (i % 10 === 9) {
+                await new Promise(resolve => setTimeout(resolve, 0));
+            }
         }
+
 
         // 检查是否已存在同名漫画
         const existingComic = state.comics.find(c => c.title === comicName.trim());
@@ -1683,16 +1765,22 @@ function openImportConfigDialog(files) {
             `;
             document.body.appendChild(progressDiv);
 
-            // 批量处理图片
+            // 批量处理图片（WebP 压缩 + 尺寸限制）
             for (let i = 0; i < sortedFiles.length; i++) {
                 const file = sortedFiles[i];
-                const base64 = await imageToBase64(file);
-                const thumbnail = await generateThumbnail(base64, 200);
+                const base64 = await processImageForStorage(file);
+                const thumbnail = await generateThumbnail(base64, 150);
                 await savePageToDB(comicId, i, base64, thumbnail);
-                
+    
                 // 更新进度
                 document.getElementById('import-progress-text').textContent = `${i + 1} / ${totalPages}`;
+    
+                // 每处理 10 张让出主线程，避免界面卡死
+                if (i % 10 === 9) {
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
             }
+
 
             // 检查是否已存在同名漫画
             const existingComic = state.comics.find(c => c.title === comicName);
@@ -1991,8 +2079,28 @@ function setupSettingsEvents() {
         radio.onchange = (e) => {
             const selectedTheme = e.target.value;
             const colors = THEME_COLORS[selectedTheme] || THEME_COLORS.pink;
-            
+        
             dialog.setAttribute('data-novel-theme', selectedTheme);
+        
+            // 🔧 修复：同步更新内层 settings-box 的主题属性
+            const settingsBox = dialog.querySelector('.novel-settings-box');
+            if (settingsBox) {
+                settingsBox.setAttribute('data-novel-theme', selectedTheme);
+                settingsBox.style.setProperty('--kp-primary', colors.primary);
+                settingsBox.style.setProperty('--kp-primary-light', colors.primaryLight);
+                settingsBox.style.setProperty('--kp-primary-deep', colors.primaryDeep);
+                settingsBox.style.setProperty('--kp-secondary', colors.secondary);
+                settingsBox.style.setProperty('--kp-bg', colors.bg);
+                settingsBox.style.setProperty('--kp-bg-soft', colors.bgSoft);
+                settingsBox.style.setProperty('--kp-text', colors.text);
+                settingsBox.style.setProperty('--kp-text-muted', colors.textMuted);
+                settingsBox.style.setProperty('--kp-border', colors.border);
+                settingsBox.style.setProperty('--kp-action-primary', colors.actionPrimary);
+                settingsBox.style.setProperty('--kp-action-primary-text', colors.actionPrimaryText);
+                settingsBox.style.setProperty('--kp-action-secondary', colors.actionSecondary);
+                settingsBox.style.setProperty('--kp-action-secondary-text', colors.actionSecondaryText);
+                settingsBox.style.setProperty('--kp-shadow', `0 12px 35px ${colors.shadow}`);
+            }
             
             dialog.style.setProperty('--kp-primary', colors.primary);
             dialog.style.setProperty('--kp-primary-light', colors.primaryLight);
@@ -2010,6 +2118,7 @@ function setupSettingsEvents() {
             dialog.style.setProperty('--kp-shadow', `0 12px 35px ${colors.shadow}`);
         };
     });
+
 
     dialog.querySelectorAll('input[name="novel-avatar-type"]').forEach(radio => {
         radio.onchange = (e) => {
@@ -2544,15 +2653,17 @@ async function initExtension() {
         await initIndexedDB();
         loadExtensionSettings();
 
-        if (state.settings.startAsFloating) {
-            createPanel();
+        // 始终创建面板（但根据 enabled 状态决定是否显示）
+        createPanel();
+        applyTheme();
+        
+        if (!state.settings.enabled) {
+            // 默认关闭：隐藏所有UI
             panelElement.style.display = 'none';
-            applyTheme();
+        } else if (state.settings.startAsFloating) {
+            panelElement.style.display = 'none';
             state.isFloating = true;
             createFloatBadge();
-        } else {
-            createPanel();
-            applyTheme();
         }
 
         let attempts = 0;
@@ -2560,30 +2671,65 @@ async function initExtension() {
             attempts++;
             const menu = document.getElementById('extensions_settings');
             if (menu && !document.getElementById('novel-ext-nav-toggle')) {
+                // 插入带启用开关的菜单栏
                 menu.insertAdjacentHTML('afterbegin', `
-                    <div class="inline-drawer" id="novel-ext-nav-toggle" style="margin-bottom: 10px; cursor: pointer; padding: 10px; background: var(--kp-primary-light, #fff0f3); border-radius: 10px; border: 2px dashed var(--kp-primary, #ff85a7); text-align: center; color: var(--kp-primary-deep, #fb7299); font-weight: bold; transition: all 0.2s ease;">
-                        <span>📚 唤醒漫画阅读器 📚</span>
+                    <div class="inline-drawer" id="novel-ext-menu-container">
+                        <div class="novel-ext-menu-header">
+                            <span class="novel-ext-menu-title">📚 漫画阅读器</span>
+                            <label class="novel-ext-toggle-switch">
+                                <input type="checkbox" id="novel-ext-enable-toggle" ${state.settings.enabled ? 'checked' : ''}>
+                                <span class="novel-ext-toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="novel-ext-menu-body" id="novel-ext-menu-body" style="display: ${state.settings.enabled ? 'block' : 'none'};">
+                            <button id="novel-ext-nav-toggle" class="novel-ext-launch-btn" type="button">
+                                📖 打开漫画阅读器
+                            </button>
+                        </div>
                     </div>
                 `);
                 
-                const toggleBtn = document.getElementById('novel-ext-nav-toggle');
-                toggleBtn.onclick = toggleMainPanel;
-                
-                toggleBtn.onmouseenter = () => {
-                    toggleBtn.style.background = 'var(--kp-primary, #ff85a7)';
-                    toggleBtn.style.color = 'var(--kp-bg, #ffffff)';
-                    toggleBtn.style.transform = 'scale(1.02)';
+                // 启用开关事件
+                const enableToggle = document.getElementById('novel-ext-enable-toggle');
+                enableToggle.onchange = (e) => {
+                    const enabled = e.target.checked;
+                    state.settings.enabled = enabled;
+                    saveExtensionSettings();
+                    
+                    const menuBody = document.getElementById('novel-ext-menu-body');
+                    menuBody.style.display = enabled ? 'block' : 'none';
+                    
+                    if (enabled) {
+                        // 启用时显示悬浮球或面板
+                        if (state.isFloating) {
+                            if (floatBadgeElement) floatBadgeElement.style.display = 'block';
+                        } else {
+                            if (panelElement) panelElement.style.display = 'flex';
+                        }
+                    } else {
+                        // 关闭时隐藏所有UI
+                        if (panelElement) panelElement.style.display = 'none';
+                        if (floatBadgeElement) floatBadgeElement.style.display = 'none';
+                    }
                 };
-                toggleBtn.onmouseleave = () => {
-                    toggleBtn.style.background = 'var(--kp-primary-light, #fff0f3)';
-                    toggleBtn.style.color = 'var(--kp-primary-deep, #fb7299)';
-                    toggleBtn.style.transform = 'scale(1)';
+                
+                // 打开按钮事件
+                const toggleBtn = document.getElementById('novel-ext-nav-toggle');
+                toggleBtn.onclick = () => {
+                    if (!state.settings.enabled) {
+                        state.settings.enabled = true;
+                        enableToggle.checked = true;
+                        document.getElementById('novel-ext-menu-body').style.display = 'block';
+                        saveExtensionSettings();
+                    }
+                    toggleMainPanel();
                 };
             }
-            if (document.getElementById('novel-ext-nav-toggle') || attempts > 20) {
+            if (document.getElementById('novel-ext-menu-container') || attempts > 20) {
                 clearInterval(injectInterval);
             }
         }, 1000);
+
     } catch (err) {
         handleError(err, '插件初始化失败');
     }
